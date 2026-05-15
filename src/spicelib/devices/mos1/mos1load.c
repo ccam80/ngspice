@@ -13,6 +13,9 @@ Modified: 2000 AlansFixes
 #include "ngspice/sperror.h"
 #include "ngspice/suffix.h"
 
+extern int ni_get_dev_index(GENinstance *inst);
+extern void ni_limit_record(int devIdx, int junctionId, double vBefore, double vAfter);
+
 int
 MOS1load(GENmodel *inModel, CKTcircuit *ckt)
         /* actually load the current value into the
@@ -358,29 +361,46 @@ MOS1load(GENmodel *inModel, CKTcircuit *ckt)
                  * and similar rudeness
                  */
 
-                if(*(ckt->CKTstate0 + here->MOS1vds) >=0) {
-                    vgs = DEVfetlim(vgs,*(ckt->CKTstate0 + here->MOS1vgs)
-                    ,von);
-                    vds = vgs - vgd;
-                    vds = DEVlimvds(vds,*(ckt->CKTstate0 + here->MOS1vds));
-                    vgd = vgs - vds;
-                } else {
-                    vgd = DEVfetlim(vgd,vgdo,von);
-                    vds = vgs - vgd;
-                    if(!(ckt->CKTfixLimit)) {
-                        vds = -DEVlimvds(-vds,-(*(ckt->CKTstate0 +
-                          here->MOS1vds)));
+                {
+                    int di = ni_get_dev_index((GENinstance *)here);
+                    if(*(ckt->CKTstate0 + here->MOS1vds) >=0) {
+                        double vgs_before = vgs;
+                        vgs = DEVfetlim(vgs,*(ckt->CKTstate0 + here->MOS1vgs)
+                                        ,von);
+                        if (di >= 0) ni_limit_record(di, 3, vgs_before, vgs);
+                        vds = vgs - vgd;
+                        {
+                            double vds_before = vds;
+                            vds = DEVlimvds(vds,*(ckt->CKTstate0 + here->MOS1vds));
+                            if (di >= 0) ni_limit_record(di, 4, vds_before, vds);
+                        }
+                        vgd = vgs - vds;
+                    } else {
+                        double vgd_before = vgd;
+                        vgd = DEVfetlim(vgd,vgdo,von);
+                        if (di >= 0) ni_limit_record(di, 5, vgd_before, vgd);
+                        vds = vgs - vgd;
+                        if(!(ckt->CKTfixLimit)) {
+                            double vds_before = vds;
+                            vds = -DEVlimvds(-vds,-(*(ckt->CKTstate0 +
+                                                      here->MOS1vds)));
+                            if (di >= 0) ni_limit_record(di, 4, vds_before, vds);
+                        }
+                        vgs = vgd + vds;
                     }
-                    vgs = vgd + vds;
-                }
-                if(vds >= 0) {
-                    vbs = DEVpnjlim(vbs,*(ckt->CKTstate0 + here->MOS1vbs),
-                    vt,here->MOS1sourceVcrit,&Check);
-                    vbd = vbs-vds;
-                } else {
-                    vbd = DEVpnjlim(vbd,*(ckt->CKTstate0 + here->MOS1vbd),
-                    vt,here->MOS1drainVcrit,&Check);
-                    vbs = vbd + vds;
+                    if(vds >= 0) {
+                        double vbs_before = vbs;
+                        vbs = DEVpnjlim(vbs,*(ckt->CKTstate0 + here->MOS1vbs),
+                                        vt,here->MOS1sourceVcrit,&Check);
+                        if (di >= 0) ni_limit_record(di, 6, vbs_before, vbs);
+                        vbd = vbs-vds;
+                    } else {
+                        double vbd_before = vbd;
+                        vbd = DEVpnjlim(vbd,*(ckt->CKTstate0 + here->MOS1vbd),
+                                        vt,here->MOS1drainVcrit,&Check);
+                        if (di >= 0) ni_limit_record(di, 7, vbd_before, vbd);
+                        vbs = vbd + vds;
+                    }
                 }
 #endif /*NODELIMITING*/
 /*

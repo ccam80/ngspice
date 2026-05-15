@@ -14,6 +14,9 @@ Modified by Paolo Nenzi 2003 and Dietmar Warning 2012
 #include "ngspice/sperror.h"
 #include "ngspice/suffix.h"
 
+extern int ni_get_dev_index(GENinstance *inst);
+extern void ni_limit_record(int devIdx, int junctionId, double vBefore, double vAfter);
+
 int
 DIOload(GENmodel *inModel, CKTcircuit *ckt)
         /* actually load the current resistance value into the
@@ -218,15 +221,25 @@ DIOload(GENmodel *inModel, CKTcircuit *ckt)
                  */
                 if ( (model->DIObreakdownVoltageGiven) &&
                         (vd < MIN(0,-here->DIOtBrkdwnV+10*vtebrk))) {
+                    double vd_before = vd;
                     vdtemp = -(vd+here->DIOtBrkdwnV);
                     vdtemp = DEVpnjlim(vdtemp,
                             -(*(ckt->CKTstate0 + here->DIOvoltage) +
                             here->DIOtBrkdwnV),vtebrk,
                             here->DIOtVcrit,&Check_dio);
                     vd = -(vdtemp+here->DIOtBrkdwnV);
+                    {
+                        int di = ni_get_dev_index((GENinstance *)here);
+                        if (di >= 0) ni_limit_record(di, 0, vd_before, vd);
+                    }
                 } else {
+                    double vd_before = vd;
                     vd = DEVpnjlim(vd,*(ckt->CKTstate0 + here->DIOvoltage),
                             vte,here->DIOtVcrit,&Check_dio);
+                    {
+                        int di = ni_get_dev_index((GENinstance *)here);
+                        if (di >= 0) ni_limit_record(di, 0, vd_before, vd);
+                    }
                 }
                 if (selfheat)
                     delTemp = DEVlimitlog(delTemp,

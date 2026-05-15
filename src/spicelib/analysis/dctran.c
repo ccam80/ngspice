@@ -41,6 +41,12 @@ extern int sharedsync(double*, double*, double, double, double, int, int*, int);
 extern int ng_ident;      /* for debugging */
 #endif
 
+/* Forward declaration for outer-loop instrumentation callback helper */
+extern void ni_fire_outer_cb(double simTimeStart, double dt,
+                              int lteRejected, int nrFailed,
+                              int accepted, int finalFailure,
+                              double newDt);
+
 #define INIT_STATS() \
 do { \
     startTime = SPfrontEnd->IFseconds();        \
@@ -70,7 +76,7 @@ DCtran(CKTcircuit *ckt,
     TRANan *job = (TRANan *) ckt->CKTcurJob;
 
     int i;
-    double olddelta;
+    double olddelta = 0.0;
     double delta;
     double newdelta;
     double *temp;
@@ -354,6 +360,11 @@ DCtran(CKTcircuit *ckt,
 
 /* 650 */
     nextTime:
+    /* Outer-loop instrumentation: step accepted */
+    ni_fire_outer_cb(ckt->CKTsimTimeStart, olddelta,
+                     /*lteRejected=*/0, /*nrFailed=*/0,
+                     /*accepted=*/1, /*finalFailure=*/0,
+                     ckt->CKTdelta);
 
     /* begin LTRA code addition */
     if (ckt->CKTtimePoints) {
@@ -711,6 +722,8 @@ resume:
 #endif
         olddelta=ckt->CKTdelta;
         /* time abort? */
+        /* Store simTimeStart BEFORE advancing CKTtime (B1 resolution) */
+        ckt->CKTsimTimeStart = ckt->CKTtime;
         ckt->CKTtime += ckt->CKTdelta;
 #ifdef CLUSTER
         CLUinput(ckt);
@@ -791,6 +804,11 @@ resume:
                 ckt->CKTmode = (ckt->CKTmode&MODEUIC) | MODETRAN | MODEINITTRAN;
             }
             ckt->CKTorder = 1;
+            /* Outer-loop instrumentation: NR failed, retry with smaller dt */
+            ni_fire_outer_cb(ckt->CKTsimTimeStart, olddelta,
+                             /*lteRejected=*/0, /*nrFailed=*/1,
+                             /*accepted=*/0, /*finalFailure=*/0,
+                             ckt->CKTdelta);
 
 #ifdef XSPICE
 /* gtri - begin - wbk - Add Breakpoint stuff */
@@ -913,6 +931,11 @@ resume:
                 (void)printf(
                     "delta set to truncation error result:point rejected\n");
 #endif
+                /* Outer-loop instrumentation: LTE rejected, retry with smaller dt */
+                ni_fire_outer_cb(ckt->CKTsimTimeStart, olddelta,
+                                 /*lteRejected=*/1, /*nrFailed=*/0,
+                                 /*accepted=*/0, /*finalFailure=*/0,
+                                 ckt->CKTdelta);
             }
         }
 
@@ -923,6 +946,11 @@ resume:
                 (void)printf("delta at delmin\n");
 #endif
             } else {
+                /* Outer-loop instrumentation: final failure- dt <= delmin twice */
+                ni_fire_outer_cb(ckt->CKTsimTimeStart, olddelta,
+                                 /*lteRejected=*/0, /*nrFailed=*/0,
+                                 /*accepted=*/0, /*finalFailure=*/1,
+                                 ckt->CKTdelta);
                 UPDATE_STATS(DOING_TRAN);
                 errMsg = CKTtrouble(ckt, "Timestep too small");
                 return(E_TIMESTEP);

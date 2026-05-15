@@ -16,6 +16,9 @@ Sydney University mods Copyright(c) 1989 Anthony E. Parker, David J. Skellern
 #include "ngspice/devdefs.h"
 #include "ngspice/suffix.h"
 
+extern int ni_get_dev_index(GENinstance *inst);
+extern void ni_limit_record(int devIdx, int junctionId, double vBefore, double vAfter);
+
 int
 JFETload(GENmodel *inModel, CKTcircuit *ckt)
         /* actually load the current resistance value into the 
@@ -207,17 +210,36 @@ JFETload(GENmodel *inModel, CKTcircuit *ckt)
                  *  limit nonlinear branch voltages 
                  */
                 ichk1=1;
-                vgs = DEVpnjlim(vgs,*(ckt->CKTstate0 + here->JFETvgs),
-                        (here->JFETtemp*CONSTKoverQ), here->JFETvcrit, &icheck);
-                vgd = DEVpnjlim(vgd,*(ckt->CKTstate0 + here->JFETvgd),
-                        (here->JFETtemp*CONSTKoverQ), here->JFETvcrit,&ichk1);
-                if (ichk1 == 1) {
-                    icheck=1;
+                {
+                    int di = ni_get_dev_index((GENinstance *)here);
+                    {
+                        double vgs_before = vgs;
+                        vgs = DEVpnjlim(vgs,*(ckt->CKTstate0 + here->JFETvgs),
+                                (here->JFETtemp*CONSTKoverQ), here->JFETvcrit, &icheck);
+                        if (di >= 0) ni_limit_record(di, 3, vgs_before, vgs);
+                    }
+                    {
+                        double vgd_before = vgd;
+                        vgd = DEVpnjlim(vgd,*(ckt->CKTstate0 + here->JFETvgd),
+                                (here->JFETtemp*CONSTKoverQ), here->JFETvcrit,&ichk1);
+                        if (di >= 0) ni_limit_record(di, 5, vgd_before, vgd);
+                    }
+                    if (ichk1 == 1) {
+                        icheck=1;
+                    }
+                    {
+                        double vgs_before2 = vgs;
+                        vgs = DEVfetlim(vgs,*(ckt->CKTstate0 + here->JFETvgs),
+                                here->JFETtThreshold);
+                        if (di >= 0) ni_limit_record(di, 3, vgs_before2, vgs);
+                    }
+                    {
+                        double vgd_before2 = vgd;
+                        vgd = DEVfetlim(vgd,*(ckt->CKTstate0 + here->JFETvgd),
+                                here->JFETtThreshold);
+                        if (di >= 0) ni_limit_record(di, 5, vgd_before2, vgd);
+                    }
                 }
-                vgs = DEVfetlim(vgs,*(ckt->CKTstate0 + here->JFETvgs),
-                        here->JFETtThreshold);
-                vgd = DEVfetlim(vgd,*(ckt->CKTstate0 + here->JFETvgd),
-                        here->JFETtThreshold);
             }
             /*
              *   determine dc current and derivatives 

@@ -22,6 +22,13 @@ static int new_gmin(CKTcircuit*, long int, long int, int);
 static int gillespie_src(CKTcircuit *, long int, long int, int);
 static int spice3_src(CKTcircuit *, long int, long int, int);
 
+/* Phase-flag helpers from niiter.c */
+extern void ni_set_phase_flags(int flags, double gmin, double srcFact);
+/* bit0=inGminDynamic, bit1=inSrcSweep, bit2=inGminSpice3 */
+#define NI_PHASE_GMIN_DYN  0x1
+#define NI_PHASE_SRC_STEP  0x2
+#define NI_PHASE_GMIN_SP3  0x4
+
 
 int
 CKTop (CKTcircuit *ckt, long int firstmode, long int continuemode,
@@ -187,7 +194,9 @@ dynamic_gmin (CKTcircuit *ckt, long int firstmode,
 
         ckt->CKTnoncon = 1;
         iters = ckt->CKTstat->STATnumIter;
+        ni_set_phase_flags(NI_PHASE_GMIN_DYN, ckt->CKTdiagGmin, 1.0);
         converged = NIiter (ckt, ckt->CKTdcTrcvMaxIter);
+        ni_set_phase_flags(0, 0.0, 1.0);
         iters = ckt->CKTstat->STATnumIter - iters;
 
         if (converged == 0) {
@@ -246,6 +255,8 @@ dynamic_gmin (CKTcircuit *ckt, long int firstmode,
     ckt->enh->conv_debug.last_NIiter_call = (ckt->CKTnumSrcSteps <= 0);
 #endif
 
+    /* Clean solve after dynamic gmin- no phase flag (direct mode) */
+    ni_set_phase_flags(0, 0.0, 1.0);
     converged = NIiter (ckt, iterlim);
 
     if (converged != 0) {
@@ -293,7 +304,9 @@ spice3_gmin (CKTcircuit *ckt, long int firstmode,
         fprintf (stderr, "Trying gmin = %12.4E ", ckt->CKTdiagGmin);
 
         ckt->CKTnoncon = 1;
+        ni_set_phase_flags(NI_PHASE_GMIN_SP3, ckt->CKTdiagGmin, 1.0);
         converged = NIiter (ckt, ckt->CKTdcTrcvMaxIter);
+        ni_set_phase_flags(0, 0.0, 1.0);
 
         if (converged != 0) {
             ckt->CKTdiagGmin = ckt->CKTgshunt;
@@ -314,6 +327,8 @@ spice3_gmin (CKTcircuit *ckt, long int firstmode,
     ckt->enh->conv_debug.last_NIiter_call = (ckt->CKTnumSrcSteps <= 0);
 #endif
 
+    /* Clean solve after spice3 gmin- no phase flag */
+    ni_set_phase_flags(0, 0.0, 1.0);
     converged = NIiter (ckt, iterlim);
 
     if (converged == 0) {
@@ -485,7 +500,9 @@ gillespie_src (CKTcircuit *ckt, long int firstmode,
     /*  First, try a straight solution with all sources at zero */
 
     fprintf (stderr, "Supplies reduced to %8.4f%% ", ckt->CKTsrcFact * 100);
+    ni_set_phase_flags(NI_PHASE_SRC_STEP, 0.0, ckt->CKTsrcFact);
     converged = NIiter (ckt, ckt->CKTdcTrcvMaxIter);
+    ni_set_phase_flags(0, 0.0, 1.0);
 
     /*  If this doesn't work, try gmin stepping as well for the first solution */
 
@@ -507,7 +524,11 @@ gillespie_src (CKTcircuit *ckt, long int firstmode,
 #endif
 
             ckt->CKTnoncon = 1;
+            /* Gmin bootstrap inside src stepping- set both flags */
+            ni_set_phase_flags(NI_PHASE_SRC_STEP | NI_PHASE_GMIN_SP3,
+                               ckt->CKTdiagGmin, ckt->CKTsrcFact);
             converged = NIiter (ckt, ckt->CKTdcTrcvMaxIter);
+            ni_set_phase_flags(0, 0.0, 1.0);
 
             if (converged != 0) {
                 ckt->CKTdiagGmin = ckt->CKTgshunt;
@@ -558,7 +579,9 @@ gillespie_src (CKTcircuit *ckt, long int firstmode,
 #endif
 
             iters = ckt->CKTstat->STATnumIter;
+            ni_set_phase_flags(NI_PHASE_SRC_STEP, 0.0, ckt->CKTsrcFact);
             converged = NIiter (ckt, ckt->CKTdcTrcvMaxIter);
+            ni_set_phase_flags(0, 0.0, 1.0);
             iters = ckt->CKTstat->STATnumIter - iters;
 
             ckt->CKTmode = continuemode;

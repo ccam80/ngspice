@@ -93,6 +93,7 @@ struct CKTcircuit {
 #define CKTstate6 CKTstates[6]
 #define CKTstate7 CKTstates[7]
     double CKTtime;             /* Current transient simulation time */
+    double CKTsimTimeStart;     /* CKTtime BEFORE current NR solve began (set by dctran.c) */
     double CKTdelta;            /* next time step in transient simulation */
     double CKTdeltaOld[7];      /* Memory for the 7 most recent CKTdelta */
     double CKTtemp;             /* Actual temperature of CKT, initialzed to 300.15 K in cktinit.c*/

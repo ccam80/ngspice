@@ -18,6 +18,9 @@ Modified: 2000 AlansFixes
 #include "ngspice/devdefs.h"
 #include "ngspice/suffix.h"
 
+extern int ni_get_dev_index(GENinstance *inst);
+extern void ni_limit_record(int devIdx, int junctionId, double vBefore, double vAfter);
+
 int
 BJTload(GENmodel *inModel, CKTcircuit *ckt)
      /* actually load the current resistance value into the
@@ -407,17 +410,38 @@ BJTload(GENmodel *inModel, CKTcircuit *ckt)
                  *   limit nonlinear branch voltages
                  */
                 ichk1=1;
-                vbe = DEVpnjlim(vbe,*(ckt->CKTstate0 + here->BJTvbe),vt,
-                        here->BJTtVcrit,&icheck);
-                vbc = DEVpnjlim(vbc,*(ckt->CKTstate0 + here->BJTvbc),vt,
-                        here->BJTtVcrit,&ichk1);
+                {
+                    double vbe_before = vbe;
+                    vbe = DEVpnjlim(vbe,*(ckt->CKTstate0 + here->BJTvbe),vt,
+                            here->BJTtVcrit,&icheck);
+                    {
+                        int di = ni_get_dev_index((GENinstance *)here);
+                        if (di >= 0) ni_limit_record(di, 1, vbe_before, vbe);
+                    }
+                }
+                {
+                    double vbc_before = vbc;
+                    vbc = DEVpnjlim(vbc,*(ckt->CKTstate0 + here->BJTvbc),vt,
+                            here->BJTtVcrit,&ichk1);
+                    {
+                        int di = ni_get_dev_index((GENinstance *)here);
+                        if (di >= 0) ni_limit_record(di, 2, vbc_before, vbc);
+                    }
+                }
                 if (ichk1 == 1) icheck=1;
-                if (model->BJTsubSatCurGiven) {
-                    vsub = DEVpnjlim(vsub,*(ckt->CKTstate0 + here->BJTvsub),vt,
-                            here->BJTtSubVcrit,&ichk1);
-                } else {
-                    vsub = DEVpnjlim(vsub,*(ckt->CKTstate0 + here->BJTvsub),vt,
-                            50,&ichk1);
+                {
+                    double vsub_before = vsub;
+                    if (model->BJTsubSatCurGiven) {
+                        vsub = DEVpnjlim(vsub,*(ckt->CKTstate0 + here->BJTvsub),vt,
+                                here->BJTtSubVcrit,&ichk1);
+                    } else {
+                        vsub = DEVpnjlim(vsub,*(ckt->CKTstate0 + here->BJTvsub),vt,
+                                50,&ichk1);
+                    }
+                    {
+                        int di = ni_get_dev_index((GENinstance *)here);
+                        if (di >= 0) ni_limit_record(di, 8, vsub_before, vsub);
+                    }
                 }
                 if (ichk1 == 1) icheck=1;
                 vrci = vbc - vbcx; /* in case vbc was limited */
