@@ -265,6 +265,234 @@ __declspec(dllexport) void ni_fire_outer_cb(double simTimeStart, double dt,
     ni_outer_cb(&d);
 }
 
+/* ============================================================================
+ * AC sweep instrumentation (extended)
+ *
+ * Sibling of the DC/transient NR instrumentation (NiIterationData / NIiter
+ * pre-LU CSC snapshot + pre-solve RHS + post-solve callback), specialised
+ * for the AC linear path. AC has no NR loop: NIacIter performs a single
+ * CKTacLoad -> SMPcLUfac (or SMPcReorder) -> SMPcSolve per frequency, with
+ * the complex matrix split across .Real/.Imag in each spMatrix element and
+ * the complex RHS split across CKTrhs/CKTirhs. After SMPcSolve, NIacIter
+ * SWAPs CKTrhs<->CKTrhsOld and CKTirhs<->CKTirhsOld so the solution lives
+ * in CKTrhsOld/CKTirhsOld for the rest of acan.c (consumed by CKTacDump).
+ *
+ * The hook fires once per frequency point. Capture sequencing inside
+ * NIacIter (acan.c:297-298 invokes NIacIter once per freq):
+ *   1. After CKTacLoad, before SMPcReorder/SMPcLUfac:
+ *        ni_ac_capture_matrix(ckt)
+ *      Snapshot the loaded complex Jacobian as external-coords CSC, both
+ *      .Real and .Imag, before in-place LU overwrites them.
+ *   2. After factor success, before SMPcSolve:
+ *        ni_ac_capture_loaded_rhs(ckt)
+ *      memcpy CKTrhs/CKTirhs- the per-frequency loaded RHS that drives
+ *      the solve.
+ *   3. After both SWAPs:
+ *        ni_ac_capture_solution_and_fire(ckt)
+ *      Solution lives in CKTrhsOld/CKTirhsOld; fill NiAcData, fire cb.
+ *
+ * Each helper short-circuits on `if (!ni_ac_cb) return;`- zero cost when
+ * the bridge has not called ni_ac_register.
+ *
+ * cite: ref/ngspice/src/spicelib/analysis/acan.c:297-298- NIacIter call site
+ * cite: ref/ngspice/src/maths/ni/niaciter.c:108-156- single-shot complex solve
+ * ========================================================================== */
+
+typedef struct {
+    int    matrixSize;     /* CKTmaxEqNum + 1 */
+    int    rhsBufSize;     /* SMPmatSize(CKTmatrix) + 1 */
+    int    nnz;            /* CSC non-zero count for this frequency */
+    int   *colPtr;         /* length matrixSize+1, CSC col offsets (external) */
+    int   *rowIdx;         /* length nnz, external row index per entry */
+    double *valsRe;        /* length nnz, loaded complex matrix Real */
+    double *valsIm;        /* length nnz, loaded complex matrix Imag */
+    double *rhsRe;         /* length rhsBufSize, loaded complex RHS Real */
+    double *rhsIm;         /* length rhsBufSize, loaded complex RHS Imag */
+    double *solRe;         /* length rhsBufSize, solution Real (= CKTrhsOld) */
+    double *solIm;         /* length rhsBufSize, solution Imag (= CKTirhsOld) */
+    double  omega;         /* CKTomega for this frequency point (rad/s) */
+    double  freq;          /* omega / (2*pi), Hz */
+} NiAcData;
+
+typedef void (*ni_ac_cb_t)(NiAcData *data);
+
+static ni_ac_cb_t ni_ac_cb = NULL;
+
+/* Staging buffers- amortised across the frequency sweep. */
+static int    *ni_ac_colPtr        = NULL;
+static int     ni_ac_colPtrSize    = 0;     /* allocated length in ints */
+static int    *ni_ac_rowIdx        = NULL;
+static double *ni_ac_valsRe        = NULL;
+static double *ni_ac_valsIm        = NULL;
+static int     ni_ac_nnzBufSize    = 0;     /* allocated length of rowIdx/vals* */
+static double *ni_ac_rhsRe         = NULL;
+static double *ni_ac_rhsIm         = NULL;
+static int     ni_ac_rhsBufSize    = 0;
+static int     ni_ac_capturedNnz   = 0;     /* nnz emitted by ni_ac_capture_matrix this freq */
+static int     ni_ac_capturedMsz   = 0;     /* matrixSize emitted by ni_ac_capture_matrix this freq */
+
+__declspec(dllexport) void ni_ac_register(ni_ac_cb_t cb) {
+    ni_ac_cb = cb;
+}
+
+/* Step 1: capture loaded complex matrix as external-coords CSC.
+ * Faithful sibling of the NIiter pre-LU snapshot (this file, ~line 706-843):
+ * same TrashCan-safe column cap (min(CKTmaxEqNum+1, AllocatedSize+1)), same
+ * Ext<->Int inverse-map construction, same prefix-sum CSC build, additionally
+ * emitting ep->Imag in parallel to ep->Real. */
+__declspec(dllexport) void ni_ac_capture_matrix(CKTcircuit *ckt) {
+    /* C89/MSVC: locals declared at top of block. */
+    NiMatrixFrame   *mx;
+    NiMatrixElement *ep;
+    int   msz, colMax, nnz, intToExtSize;
+    int  *IntToExtCol = NULL;
+    int  *IntToExtRow = NULL;
+    int  *tmpExtCol   = NULL;
+    int  *tmpExtRow   = NULL;
+    double *tmpValsRe = NULL;
+    double *tmpValsIm = NULL;
+    int  *cursor      = NULL;
+    int   col, idx, ext, in, c, k, ec, pos, ii;
+    int   extCol, extRow;
+
+    if (!ni_ac_cb) return;
+    mx = (NiMatrixFrame *)ckt->CKTmatrix;
+    if (!mx) return;
+
+    msz = ckt->CKTmaxEqNum + 1;
+    colMax = msz;
+    if (mx->AllocatedSize + 1 < colMax)
+        colMax = mx->AllocatedSize + 1;
+
+    /* Pass 1: count */
+    nnz = 0;
+    for (col = 1; col < colMax; col++) {
+        for (ep = mx->FirstInCol[col]; ep != NULL; ep = ep->NextInCol) {
+            nnz++;
+        }
+    }
+
+    /* Realloc CSC output buffers if needed */
+    if (ni_ac_colPtrSize < msz + 1) {
+        FREE(ni_ac_colPtr);
+        ni_ac_colPtr     = TMALLOC(int, msz + 1);
+        ni_ac_colPtrSize = msz + 1;
+    }
+    if (ni_ac_nnzBufSize < nnz) {
+        FREE(ni_ac_rowIdx);
+        FREE(ni_ac_valsRe);
+        FREE(ni_ac_valsIm);
+        ni_ac_rowIdx     = TMALLOC(int,    nnz > 0 ? nnz : 1);
+        ni_ac_valsRe     = TMALLOC(double, nnz > 0 ? nnz : 1);
+        ni_ac_valsIm     = TMALLOC(double, nnz > 0 ? nnz : 1);
+        ni_ac_nnzBufSize = nnz > 0 ? nnz : 1;
+    }
+
+    /* Build inverse maps; if absent (no preorder), identity. */
+    intToExtSize = mx->AllocatedSize + 1;
+    if (mx->ExtToIntColMap && mx->ExtToIntRowMap) {
+        IntToExtCol = TMALLOC(int, intToExtSize + 1);
+        IntToExtRow = TMALLOC(int, intToExtSize + 1);
+        for (ii = 0; ii <= intToExtSize; ii++) {
+            IntToExtCol[ii] = 0;
+            IntToExtRow[ii] = 0;
+        }
+        for (ext = 1; ext <= mx->ExtSize; ext++) {
+            in = mx->ExtToIntColMap[ext];
+            if (in >= 1 && in <= intToExtSize) IntToExtCol[in] = ext;
+        }
+        for (ext = 1; ext <= mx->ExtSize; ext++) {
+            in = mx->ExtToIntRowMap[ext];
+            if (in >= 1 && in <= intToExtSize) IntToExtRow[in] = ext;
+        }
+    }
+
+    /* Collect (extCol, extRow, valRe, valIm) triples. */
+    tmpExtCol = TMALLOC(int,    nnz > 0 ? nnz : 1);
+    tmpExtRow = TMALLOC(int,    nnz > 0 ? nnz : 1);
+    tmpValsRe = TMALLOC(double, nnz > 0 ? nnz : 1);
+    tmpValsIm = TMALLOC(double, nnz > 0 ? nnz : 1);
+    idx = 0;
+    for (col = 1; col < colMax; col++) {
+        extCol = IntToExtCol ? IntToExtCol[col] : col;
+        for (ep = mx->FirstInCol[col]; ep != NULL; ep = ep->NextInCol) {
+            extRow = IntToExtRow ? IntToExtRow[ep->Row] : ep->Row;
+            tmpExtCol[idx] = extCol;
+            tmpExtRow[idx] = extRow;
+            tmpValsRe[idx] = ep->Real;
+            tmpValsIm[idx] = ep->Imag;
+            idx++;
+        }
+    }
+
+    /* Build CSC: zero colPtr, count-per-col, prefix-sum, scatter. */
+    for (c = 0; c < msz + 1; c++) ni_ac_colPtr[c] = 0;
+    for (k = 0; k < nnz; k++) {
+        ec = tmpExtCol[k];
+        if (ec >= 1 && ec < msz) ni_ac_colPtr[ec + 1]++;
+    }
+    for (c = 1; c <= msz; c++) ni_ac_colPtr[c] += ni_ac_colPtr[c - 1];
+
+    cursor = TMALLOC(int, msz + 1);
+    for (c = 0; c <= msz; c++) cursor[c] = ni_ac_colPtr[c];
+    for (k = 0; k < nnz; k++) {
+        ec = tmpExtCol[k];
+        if (ec >= 1 && ec < msz) {
+            pos = cursor[ec]++;
+            ni_ac_rowIdx[pos] = tmpExtRow[k];
+            ni_ac_valsRe[pos] = tmpValsRe[k];
+            ni_ac_valsIm[pos] = tmpValsIm[k];
+        }
+    }
+
+    FREE(cursor);
+    FREE(tmpExtCol);
+    FREE(tmpExtRow);
+    FREE(tmpValsRe);
+    FREE(tmpValsIm);
+    FREE(IntToExtCol);
+    FREE(IntToExtRow);
+
+    ni_ac_capturedNnz = nnz;
+    ni_ac_capturedMsz = msz;
+}
+
+/* Step 2: snapshot loaded complex RHS before SMPcSolve overwrites. */
+__declspec(dllexport) void ni_ac_capture_loaded_rhs(CKTcircuit *ckt) {
+    int sz;
+    if (!ni_ac_cb) return;
+    sz = SMPmatSize(ckt->CKTmatrix) + 1;
+    if (ni_ac_rhsBufSize < sz) {
+        FREE(ni_ac_rhsRe);
+        FREE(ni_ac_rhsIm);
+        ni_ac_rhsRe      = TMALLOC(double, sz);
+        ni_ac_rhsIm      = TMALLOC(double, sz);
+        ni_ac_rhsBufSize = sz;
+    }
+    memcpy(ni_ac_rhsRe, ckt->CKTrhs,  (size_t)sz * sizeof(double));
+    memcpy(ni_ac_rhsIm, ckt->CKTirhs, (size_t)sz * sizeof(double));
+}
+
+/* Step 3: solution lives in CKTrhsOld / CKTirhsOld after both SWAPs. Fire cb. */
+__declspec(dllexport) void ni_ac_capture_solution_and_fire(CKTcircuit *ckt) {
+    NiAcData d;
+    if (!ni_ac_cb) return;
+    d.matrixSize = ckt->CKTmaxEqNum + 1;
+    d.rhsBufSize = SMPmatSize(ckt->CKTmatrix) + 1;
+    d.nnz        = ni_ac_capturedNnz;
+    d.colPtr     = ni_ac_colPtr;
+    d.rowIdx     = ni_ac_rowIdx;
+    d.valsRe     = ni_ac_valsRe;
+    d.valsIm     = ni_ac_valsIm;
+    d.rhsRe      = ni_ac_rhsRe;
+    d.rhsIm      = ni_ac_rhsIm;
+    d.solRe      = ckt->CKTrhsOld;
+    d.solIm      = ckt->CKTirhsOld;
+    d.omega      = ckt->CKTomega;
+    d.freq       = ckt->CKTomega / (2.0 * M_PI);
+    ni_ac_cb(&d);
+}
+
 /*
  * Helper: join an array of strings into a single pipe-delimited buffer.
  * Returns a TMALLOC'd buffer; caller must FREE it.

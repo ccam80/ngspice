@@ -17,6 +17,13 @@ Modified BSD license
 #include "ngspice/missing_math.h"
 #include "com_optran.h"
 
+/* Harness outer-loop instrumentation (defined alongside the NIiter callback):
+   one accept/reject decision per transient solve. OPtran runs its own
+   pseudo-transient accept/reject loop, so it fires these like dctran. */
+extern void ni_fire_outer_cb(double simTimeStart, double dt,
+                             int lteRejected, int nrFailed,
+                             int accepted, int finalFailure,
+                             double newDt);
 
 /* for setting breakpoints required by dbs data base */
 extern struct dbcomm *dbs;
@@ -731,6 +738,11 @@ resume:
                 ckt->CKTmode = (ckt->CKTmode&MODEUIC) | MODETRAN | MODEINITTRAN;
             }
             ckt->CKTorder = 1;
+            /* Outer-loop instrumentation: NR failed, retry with smaller dt */
+            ni_fire_outer_cb(ckt->CKTsimTimeStart, olddelta,
+                             /*lteRejected=*/0, /*nrFailed=*/1,
+                             /*accepted=*/0, /*finalFailure=*/0,
+                             ckt->CKTdelta);
 
 #ifdef XSPICE
 /* gtri - begin - wbk - Add Breakpoint stuff */
@@ -753,6 +765,11 @@ resume:
         } else {
             if (firsttime) {
                 firsttime = 0;
+                /* Outer-loop instrumentation: first transient point accepted */
+                ni_fire_outer_cb(ckt->CKTsimTimeStart, olddelta,
+                                 /*lteRejected=*/0, /*nrFailed=*/0,
+                                 /*accepted=*/1, /*finalFailure=*/0,
+                                 ckt->CKTdelta);
 #if !defined SHARED_MODULE
                 goto nextTime;  /* no check on
                                  * first time point
@@ -783,6 +800,11 @@ resume:
                 }
                 /* time point OK  - 630 */
                 ckt->CKTdelta = newdelta;
+                /* Outer-loop instrumentation: step accepted */
+                ni_fire_outer_cb(ckt->CKTsimTimeStart, olddelta,
+                                 /*lteRejected=*/0, /*nrFailed=*/0,
+                                 /*accepted=*/1, /*finalFailure=*/0,
+                                 ckt->CKTdelta);
 
 #if !defined SHARED_MODULE
                 /* go to 650 - trapezoidal */
@@ -801,6 +823,11 @@ resume:
 #endif
 
                 ckt->CKTdelta = newdelta;
+                /* Outer-loop instrumentation: LTE rejected, retry with smaller dt */
+                ni_fire_outer_cb(ckt->CKTsimTimeStart, olddelta,
+                                 /*lteRejected=*/1, /*nrFailed=*/0,
+                                 /*accepted=*/0, /*finalFailure=*/0,
+                                 ckt->CKTdelta);
             }
         }
 
@@ -808,6 +835,11 @@ resume:
             if (olddelta > ckt->CKTdelmin) {
                 ckt->CKTdelta = ckt->CKTdelmin;
             } else {
+                /* Outer-loop instrumentation: final failure- dt <= delmin twice */
+                ni_fire_outer_cb(ckt->CKTsimTimeStart, olddelta,
+                                 /*lteRejected=*/0, /*nrFailed=*/0,
+                                 /*accepted=*/0, /*finalFailure=*/1,
+                                 ckt->CKTdelta);
                 errMsg = CKTtrouble(ckt, "Timestep too small");
                 tfree(opbreaks);
                 return(E_TIMESTEP);

@@ -24,10 +24,11 @@ static int spice3_src(CKTcircuit *, long int, long int, int);
 
 /* Phase-flag helpers from niiter.c */
 extern void ni_set_phase_flags(int flags, double gmin, double srcFact);
-/* bit0=inGminDynamic, bit1=inSrcSweep, bit2=inGminSpice3 */
+/* bit0=inGminDynamic, bit1=inSrcSweep, bit2=inGminSpice3, bit3=inGminNew */
 #define NI_PHASE_GMIN_DYN  0x1
 #define NI_PHASE_SRC_STEP  0x2
 #define NI_PHASE_GMIN_SP3  0x4
+#define NI_PHASE_GMIN_NEW  0x8
 
 
 int
@@ -385,7 +386,9 @@ new_gmin(CKTcircuit* ckt, long int firstmode,
 
         ckt->CKTnoncon = 1;
         iters = ckt->CKTstat->STATnumIter;
+        ni_set_phase_flags(NI_PHASE_GMIN_NEW, ckt->CKTgmin, 1.0);
         converged = NIiter(ckt, ckt->CKTdcTrcvMaxIter);
+        ni_set_phase_flags(0, 0.0, 1.0);
         iters = ckt->CKTstat->STATnumIter - iters;
 
         if (converged == 0) {
@@ -446,6 +449,8 @@ new_gmin(CKTcircuit* ckt, long int firstmode,
     ckt->enh->conv_debug.last_NIiter_call = (ckt->CKTnumSrcSteps <= 0);
 #endif
 
+    /* Clean solve after true gmin- no phase flag (direct mode) */
+    ni_set_phase_flags(0, 0.0, 1.0);
     converged = NIiter(ckt, iterlim);
 
     if (converged != 0) {

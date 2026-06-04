@@ -19,6 +19,14 @@ Modified 1999 Emmanuel Rouat
 #include "ngspice/cktdefs.h"
 #include "ngspice/sperror.h"
 
+/* AC sweep instrumentation- defined in niiter.c. Each helper is a no-op
+ * (single null-pointer test) when ni_ac_register has not been called, so
+ * stock ngspice users pay zero cost. Capture sequencing matches the
+ * comments at the top of the AC instrumentation block in niiter.c. */
+extern void ni_ac_capture_matrix(CKTcircuit *ckt);
+extern void ni_ac_capture_loaded_rhs(CKTcircuit *ckt);
+extern void ni_ac_capture_solution_and_fire(CKTcircuit *ckt);
+
 #ifdef RFSPICE
      // We don't need to reload the AC matrix for every port analysis
      // So we split the NIacIter in two functions
@@ -107,7 +115,11 @@ retry:
 
     error = CKTacLoad(ckt);
     if(error) return(error);
-    
+
+    /* Step 1: snapshot the loaded complex Jacobian as CSC (re+im) before
+     * SMPcLUfac overwrites .Real/.Imag with L/U. No-op without registration. */
+    ni_ac_capture_matrix(ckt);
+
     if(ckt->CKTniState & NIACSHOULDREORDER) {
 	startTime = SPfrontEnd->IFseconds();
         error = SMPcReorder(ckt->CKTmatrix,ckt->CKTpivotAbsTol,
@@ -137,9 +149,14 @@ retry:
             }
             return(error); /* can't handle E_BADMATRIX, so let caller */
         }
-    } 
+    }
+
+    /* Step 2: snapshot loaded complex RHS before SMPcSolve overwrites
+     * CKTrhs/CKTirhs with the solution. No-op without registration. */
+    ni_ac_capture_loaded_rhs(ckt);
+
     startTime = SPfrontEnd->IFseconds();
-    SMPcSolve(ckt->CKTmatrix,ckt->CKTrhs, 
+    SMPcSolve(ckt->CKTmatrix,ckt->CKTrhs,
             ckt->CKTirhs, ckt->CKTrhsSpare,
             ckt->CKTirhsSpare);
     ckt->CKTstat->STATsolveTime += SPfrontEnd->IFseconds() - startTime;
@@ -154,6 +171,10 @@ retry:
     SWAP(double *, ckt->CKTirhs, ckt->CKTirhsOld);
 
     SWAP(double *, ckt->CKTrhs, ckt->CKTrhsOld);
+
+    /* Step 3: solution lives in CKTrhsOld / CKTirhsOld after the SWAPs.
+     * Fill NiAcData and fire the registered callback. No-op without registration. */
+    ni_ac_capture_solution_and_fire(ckt);
 
     return(OK);
 }
