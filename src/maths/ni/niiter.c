@@ -107,7 +107,7 @@ typedef struct {
     int *limitWasLimited;
     /* Timestep-alignment fields (added for phase-aware capture) */
     double simTimeStart; /* CKTtime BEFORE the current NR solve began (set by dctran/niiter) */
-    double phaseGmin;    /* current diagGmin during gmin stepping, else 0 */
+    double phaseGmin;    /* live ckt->CKTdiagGmin (diagonal conductance in spFactor) */
     double phaseSrcFact; /* current source factor during src stepping, else 1 */
     int    phaseFlags;   /* bit0=inGminDynamic, bit1=inSrcSweep, bit2=inGminSpice3 */
 } NiIterationData;
@@ -1242,7 +1242,12 @@ NIiter(CKTcircuit *ckt, int maxIter)
                     ni_data.matrixNnz       = ni_mxNnz;
                     /* Timestep-alignment fields */
                     ni_data.simTimeStart    = ckt->CKTsimTimeStart;
-                    ni_data.phaseGmin       = ni_phase_gmin;
+                    /* The live diagonal conductance added in spFactor (lines
+                       above), not the phase-flag value: during gmin stepping the
+                       two agree, but OPtran's pseudo-transient runs with the gmin
+                       gillespie_src left on the diagonal (cktop.c:647) while the
+                       phase-flag gmin is 0, so capture the actual value. */
+                    ni_data.phaseGmin       = ckt->CKTdiagGmin;
                     ni_data.phaseSrcFact    = ni_phase_src_fact;
                     ni_data.phaseFlags      = ni_phase_flags;
 
