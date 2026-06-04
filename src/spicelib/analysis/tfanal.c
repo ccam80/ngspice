@@ -12,10 +12,25 @@ Author: 1988 Thomas L. Quarles
 #include "ngspice/smpdefs.h"
 #include "ngspice/tfdefs.h"
 
+/*
+ * Harness instrumentation: capture the three .tf scalars (outputs[0..2] at
+ * tfanal.c below) bit-exact for the paired digiTS comparison, taken directly
+ * from the C `outputs[]` array before OUTpData hands them to the front-end
+ * plot. Zero cost when unregistered. Mirrors the ni_*_register hooks in
+ * maths/ni/niiter.c.
+ */
+typedef void (*tf_cb_t)(double transferFunction, double inputResistance,
+                        double outputResistance);
+static tf_cb_t tf_capture_cb = NULL;
+
+__declspec(dllexport) void tf_register(tf_cb_t cb) {
+    tf_capture_cb = cb;
+}
+
 
 /* ARGSUSED */
 int
-TFanal(CKTcircuit *ckt, int restart) 
+TFanal(CKTcircuit *ckt, int restart)
                     
                     /* forced restart flag */
 {
@@ -156,6 +171,9 @@ TFanal(CKTcircuit *ckt, int restart)
         outputs[2] = 1/MAX(1e-20,ckt->CKTrhs[outsrc]);
     }
 done:
+    /* Harness capture: outputs[0..2] are populated on both the normal path and
+     * the TFoutSrc==TFinSrc shortcut (goto done) above. */
+    if (tf_capture_cb) tf_capture_cb(outputs[0], outputs[1], outputs[2]);
     outdata.v.numValue=3;
     outdata.v.vec.rVec=outputs;
     refval.rValue = 0;
