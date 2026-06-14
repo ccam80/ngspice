@@ -6919,7 +6919,7 @@ static char *inp_modify_exp(/* NOT CONST */ char *expr)
                     s++;
                 }
                 else {
-                    wl->wl_word = tprintf("%18.10e", dvalue);
+                    wl->wl_word = tprintf("%.17e", dvalue);
                     /* skip the `unit', FIXME INPevaluate() should do this */
                     while (isalpha_c(*s))
                         s++;
@@ -6996,7 +6996,7 @@ static char *inp_modify_exp(/* NOT CONST */ char *expr)
             int error1;
             /* allow 100p, 5MEG etc. */
             double dvalue = INPevaluate(&s, &error1, 0);
-            wl->wl_word = tprintf("%18.10e", dvalue);
+            wl->wl_word = tprintf("%.17e", dvalue);
             /* skip the `unit', FIXME INPevaluate() should do this */
             while (isalpha_c(*s)) {
                 s++;
